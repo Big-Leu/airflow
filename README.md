@@ -26,3 +26,67 @@ docker volume prune -f
 
 # Try starting again
 docker-compose up
+
+
+docker-compose down -v
+docker-compose --env-file .env up
+
+
+    # @task
+    # def query_health_check_file(id=None):
+    #     pg_hook = PostgresHook(postgres_conn_id="postgres_default")
+
+    #     if id:
+    #         # Query for a specific health check file by ID
+    #         sql = """
+    #         SELECT id, file_name, s3_path, airflow_dag_run_id, status, 
+    #                user_id, mapping_json, created_at, updated_at
+    #         FROM control_health_check_files
+    #         WHERE id = %s;
+    #         """
+    #         params = (id,)
+    #     else:
+    #         # Get the first health check file
+    #         sql = """
+    #         SELECT id, file_name, s3_path, airflow_dag_run_id, status, 
+    #                user_id, mapping_json, created_at, updated_at
+    #         FROM control_health_check_files
+    #         LIMIT 1;
+    #         """
+    #         params = None
+
+    #     conn = pg_hook.get_conn()
+    #     cursor = conn.cursor()
+    #     cursor.execute(sql, params)
+    #     result = cursor.fetchone()
+    #     cursor.close()
+    #     conn.close()
+
+    #     if not result:
+    #         print("Control Health Check File not found.")
+    #         return None
+
+    #     # Convert result to a dictionary
+    #     columns = [
+    #         "id",
+    #         "file_name",
+    #         "s3_path",
+    #         "airflow_dag_run_id",
+    #         "status",
+    #         "user_id",
+    #         "mapping_json",
+    #         "created_at",
+    #         "updated_at",
+    #     ]
+    #     health_check_file = dict(zip(columns, result))
+
+    #     # Extract the S3 object path
+    #     s3_object = health_check_file["file_name"]
+    #     print(f"Found health check file: {s3_object}")
+
+    #     return health_check_file
+
+
+    Run docker compose build to build the image, or add --build flag to docker compose up or docker compose run commands to build the image automatically as needed.
+
+    docker-compose --env-file .env up
