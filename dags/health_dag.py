@@ -3,10 +3,10 @@ from pydantic import BaseModel, Field, UUID4
 from typing import Optional
 from datetime import datetime
 from enum import Enum
+from uuid import uuid4
 
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from datetime import datetime
 import os
 
 from health_check import DuplicateDetectionService
@@ -124,30 +124,132 @@ def health_dag():
         return health_check_file
 
     @task
-    def download_health_check_file():
-        local_file = "dags/duplicates_4be25b5b-b03a-42a2-bf9d-e82c58c5f533.xlsx"
-        if os.path.exists(local_file):
-            df = pd.read_excel(local_file)
-            service = DuplicateDetectionService()
-            results = service.detect_duplicates(df, df.columns.tolist())
-            details = []
-            for item in results:
+    def process_excel_file():
+        CHUNK_SIZE = 1000  # Adjust based on available memory
+        excel_path = "dags/duplicates_4be25b5b-b03a-42a2-bf9d-"
+        excel_path += "e82c58c5f533.xlsx"
+        
+        if not os.path.exists(excel_path):
+            raise FileNotFoundError(f"Excel file not found: {excel_path}")
+            
+        service = DuplicateDetectionService()
+        all_details = []
+        
+        # Read the Excel file
+        df = pd.read_excel(excel_path)
+        total_rows = len(df)
+        
+        # Process the dataframe in chunks
+        for chunk_start in range(0, total_rows, CHUNK_SIZE):
+            chunk_end = min(chunk_start + CHUNK_SIZE, total_rows)
+            df_chunk = df.iloc[chunk_start:chunk_end]
+            
+            # Detect duplicates in this chunk
+            chunk_results = service.detect_duplicates(
+                df_chunk,
+                df_chunk.columns.tolist()
+            )
+            
+            # Process the duplicate results
+            chunk_details = []
+            for item in chunk_results:
                 idx = item.get("index")
-                if idx is not None and 0 <= idx < len(df):
-                    row = df.iloc[idx]
+                if idx is not None and 0 <= idx < len(df_chunk):
+                    row = df_chunk.iloc[idx]
+                    now = datetime.utcnow()
                     detail = ControlHealthCheckDetail(
-                        external_id=id,
+                        id=uuid4(),
+                        external_id=uuid4(),
                         name=row.get("name", ""),
                         description=row.get("description", ""),
                         objective=row.get("objective", ""),
                         type=row.get("type", ""),
                         class_=row.get("class", ""),
-                        match_percentage=item.get("match_percentage"),
+                        status=DuplicateStatus.PENDING.value,
+                        match_percentage=int(
+                            round(item.get("match_percentage", 0))
+                        ),
+                        created_at=now,
+                        updated_at=now
                     )
-                    details.append(detail)
+                    chunk_details.append(detail)
+            
+            all_details.extend(chunk_details)
+            chunk_num = chunk_start // CHUNK_SIZE + 1
+            total_chunks = (total_rows + CHUNK_SIZE - 1) // CHUNK_SIZE
+            print(f"Processed chunk {chunk_num}/{total_chunks}")
+        
+        print(f"Total duplicates found: {len(all_details)}")
+        # Convert Pydantic models to dictionaries and ensure UUIDs are strings
+        serializable_details = []
+        for detail in all_details:
+            detail_dict = detail.model_dump()
+            # Convert UUIDs to strings
+            detail_dict['id'] = str(detail_dict['id'])
+            detail_dict['external_id'] = str(detail_dict['external_id'])
+            serializable_details.append(detail_dict)
+        return serializable_details
 
-            return details
-    query_health_check_file() >> download_health_check_file()
+    @task
+    def process_health_check_details(details_dicts):
+        if not details_dicts:
+            print("No details to process")
+            return
+        
+        BATCH_SIZE = 1000  # Adjust this based on your needs
+        pg_hook = PostgresHook(postgres_conn_id="postgres_default")
+        
+        # Prepare the SQL statement for batch insert
+        insert_sql = """
+        INSERT INTO control_health_check_details (
+            id, external_id, name, description, objective, type, class,
+            status, match_percentage, created_at, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        );
+        """
+        
+        # Convert dictionaries to list of tuples for batch insert
+        records = [
+            (
+                str(detail["id"]),
+                str(detail["external_id"]),
+                detail["name"],
+                detail["description"],
+                detail["objective"],
+                detail["type"],
+                detail["class_"],
+                detail["status"],
+                detail["match_percentage"],
+                detail["created_at"],
+                detail["updated_at"]
+            )
+            for detail in details_dicts
+        ]
+        
+        # Process in batches
+        total_records = len(records)
+        processed = 0
+        
+        try:
+            with pg_hook.get_conn() as conn:
+                with conn.cursor() as cur:
+                    while processed < total_records:
+                        batch = records[processed:processed + BATCH_SIZE]
+                        cur.executemany(insert_sql, batch)
+                        processed += len(batch)
+                        print(f"Inserted {processed}/{total_records}")
+                conn.commit()
+            print(f"Successfully processed {total_records} records")
+            
+        except Exception as e:
+            print(f"Error inserting health check details: {str(e)}")
+            raise
+    
+    # Define the DAG structure
+    # Create the task instances
+    excel_task = process_excel_file()
+    db_task = process_health_check_details(excel_task)
 
 
 health_dag()
